@@ -405,6 +405,85 @@ def get_links_for_username(browser,
     return links[:amount]
 
 
+def get_tagged_images_links_for_username(browser,
+                           username,
+                           amount,
+                           logger,
+                           randomize=False,
+                           media=None):
+
+    """Fetches the number of links specified
+    by amount and returns a list of links"""
+    if media is None:
+        # All known media types
+        media = ['', 'Post', 'Video']
+    elif media == 'Photo':
+        # Include posts with multiple images in it
+        media = ['', 'Post']
+    else:
+        # Make it an array to use it in the following part
+        media = [media]
+
+    logger.info('Getting {} image list...'.format(username))
+
+    user_link = "https://www.instagram.com/{}/tagged".format(username)
+
+    #Check URL of the webpage, if it already is user's profile page, then do not navigate to it again
+    web_address_navigator(browser, user_link)
+
+    body_elem = browser.find_element_by_tag_name('body')
+    abort = True
+
+    try:
+        is_private = is_private_profile(browser, logger)
+    except:
+        logger.info('Interaction begin...')
+    else:
+        if is_private:
+            logger.warning('This user is private...')
+            return False
+
+    if "Page Not Found" in browser.title:
+        logger.error('Intagram error: The link you followed may be broken, or the page may have been removed...')
+        return False
+
+    #Get links
+    links = []
+    main_elem = browser.find_element_by_tag_name('article')
+    posts_count = get_number_of_posts(browser)
+    attempt = 0
+
+    if posts_count is not None and amount > posts_count:
+        logger.info("You have requested to get {} posts from {}'s profile page BUT"
+                    " there only {} posts available :D".format(amount, username, posts_count))
+        amount = posts_count
+
+    while len(links) < amount:
+        initial_links = links
+        browser.execute_script(
+            "window.scrollTo(0, document.body.scrollHeight);")
+        # update server calls after a scroll request
+        update_activity()
+        sleep(0.66)
+
+        # using `extend`  or `+=` results reference stay alive which affects previous assignment (can use `copy()` for it)
+        links = links + get_links(browser, username, logger, media, main_elem)
+        links = sorted(set(links), key=links.index)
+
+        if len(links) == len(initial_links):
+            if attempt >= 7:
+                logger.info("There are possibly less posts than {} in {}'s profile page!".format(amount, username))
+                break
+            else:
+                attempt += 1
+        else:
+            attempt = 0
+
+    if randomize == True:
+        random.shuffle(links)
+
+    return links[:amount]
+
 
 def check_link(browser, post_link, dont_like, mandatory_words, ignore_if_contains, logger):
     """

@@ -31,6 +31,7 @@ from .like_util import get_tags
 from .like_util import get_links_for_location
 from .like_util import like_image
 from .like_util import get_links_for_username
+from .like_util import get_tagged_images_links_for_username
 from .login_util import login_user
 from .settings import Settings
 from .print_log_writer import log_follower_num
@@ -1865,6 +1866,228 @@ class InstaPy:
 
         return self
 
+    def like_tagged_images_by_users(self, usernames, amount=10, randomize=False, media=None):
+        """Likes some amounts of images for each usernames"""
+        if self.aborting:
+            return self
+
+        if not isinstance(usernames, list):
+            usernames = [usernames]
+
+        liked_img = 0
+        total_liked_img = 0
+        already_liked = 0
+        inap_img = 0
+        commented = 0
+        followed = 0
+        not_valid_users = 0
+
+        usernames = usernames or []
+        self.quotient_breach = False
+
+        for index, username in enumerate(usernames):
+            if self.quotient_breach:
+                break
+
+            self.logger.info("Username [{}/{}]"
+                              .format(index + 1, len(usernames)))
+            self.logger.info("--> {}"
+                              .format(username.encode('utf-8')))
+
+            following = random.randint(0, 100) <= self.follow_percentage
+
+            validation, details = validate_username(self.browser,
+                                           username,
+                                           self.username,
+                                           self.ignore_users,
+                                           self.blacklist,
+                                           self.potency_ratio,
+                                           self.delimit_by_numbers,
+                                           self.max_followers,
+                                           self.max_following,
+                                           self.min_followers,
+                                           self.min_following,
+                                           self.logger)
+            if not validation:
+                self.logger.info("--> not a valid user: {}".format(details))
+                not_valid_users += 1
+                continue
+
+            try:
+                links = get_tagged_images_links_for_username(
+                    self.browser,
+                    username,
+                    amount,
+                    self.logger,
+                    randomize,
+                    media)
+
+            except NoSuchElementException:
+                self.logger.error('Element not found, skipping this username')
+                continue
+
+            if (self.do_follow and
+                username not in self.dont_include and
+                following and
+                not follow_restriction("read",
+                                         username,
+                                          self.follow_times,
+                                           self.logger)):
+                follow_state, msg = follow_user(self.browser,
+                                        "profile",
+                                        self.username,
+                                        username,
+                                        None,
+                                        self.blacklist,
+                                        self.logger,
+                                        self.logfolder)
+                if follow_state == True:
+                    followed += 1
+            else:
+                self.logger.info('--> Not following')
+                sleep(1)
+
+            if links is False:
+                continue
+
+            # Reset like counter for every username
+            liked_img = 0
+
+            for i, link in enumerate(links):
+                # Check if target has reached
+                if liked_img >= amount:
+                    self.logger.info('-------------')
+                    self.logger.info("--> Total liked image reached it's "
+                                     "amount given: {}".format(liked_img))
+                    break
+
+                if self.jumps["consequent"]["likes"] >= self.jumps["limit"]["likes"]:
+                    self.logger.warning("--> Like quotient reached its peak!\t~leaving Like-By-Users activity\n")
+                    self.quotient_breach = True
+                    # reset jump counter after a breach report
+                    self.jumps["consequent"]["likes"] = 0
+                    break
+
+                self.logger.info('Post [{}/{}]'.format(liked_img + 1, amount))
+                self.logger.info(link)
+
+                try:
+                    inappropriate, user_name, is_video, reason, scope = (
+                        check_link(self.browser,
+                                   link,
+                                   self.dont_like,
+                                   self.mandatory_words,
+                                   self.ignore_if_contains,
+                                   self.logger))
+
+                    if not inappropriate and self.delimit_liking:
+                        self.liking_approved = verify_liking(self.browser, self.max_likes, self.min_likes, self.logger)
+
+                    if not inappropriate and self.liking_approved:
+                        like_state, msg = like_image(self.browser,
+                                                      user_name,
+                                                       self.blacklist,
+                                                        self.logger,
+                                                        self.logfolder)
+                        if like_state == True:
+                            total_liked_img += 1
+                            liked_img += 1
+                            # reset jump counter after a successful like
+                            self.jumps["consequent"]["likes"] = 0
+
+                            checked_img = True
+                            temp_comments = []
+
+                            commenting = random.randint(
+                                0, 100) <= self.comment_percentage
+
+                            if self.use_clarifai and (following or commenting):
+                                try:
+                                    checked_img, temp_comments = (
+                                        check_image(self.browser,
+                                                    self.clarifai_api_key,
+                                                    self.clarifai_img_tags,
+                                                    self.clarifai_img_tags_skip,
+                                                    self.logger,
+                                                    self.clarifai_full_match)
+                                    )
+                                except Exception as err:
+                                    self.logger.error(
+                                        'Image check error: {}'.format(err))
+
+                            if (self.do_comment and
+                                user_name not in self.dont_include and
+                                checked_img and
+                                    commenting):
+
+                                if self.delimit_commenting:
+                                    (self.commenting_approved,
+                                     disapproval_reason) = verify_commenting(
+                                                                self.browser,
+                                                                 self.max_comments,
+                                                                 self.min_comments,
+                                                                  self.logger)
+                                if self.commenting_approved:
+                                    if temp_comments:
+                                        # use clarifai related comments only!
+                                        comments = temp_comments
+                                    elif is_video:
+                                        comments = (self.comments +
+                                                    self.video_comments)
+                                    else:
+                                        comments = (self.comments +
+                                                    self.photo_comments)
+
+                                    comment_state, msg = comment_image(self.browser,
+                                                               user_name,
+                                                               comments,
+                                                               self.blacklist,
+                                                               self.logger,
+                                                               self.logfolder)
+                                    if comment_state == True:
+                                        commented += 1
+
+                                else:
+                                    self.logger.info(disapproval_reason)
+
+                            else:
+                                self.logger.info('--> Not commented')
+                                sleep(1)
+
+                        elif msg == "already liked":
+                            already_liked += 1
+
+                        elif msg == "jumped":
+                            # will break the loop after certain consecutive jumps
+                            self.jumps["consequent"]["likes"] += 1
+
+                    else:
+                        self.logger.info(
+                            '--> Image not liked: {}'.format(reason.encode('utf-8')))
+                        inap_img += 1
+
+                except NoSuchElementException as err:
+                    self.logger.error('Invalid Page: {}'.format(err))
+
+            if liked_img < amount:
+                self.logger.info('-------------')
+                self.logger.info("--> Given amount not fullfilled, "
+                                 "image pool reached its end\n")
+
+        self.logger.info('User: {}'.format(username.encode('utf-8')))
+        self.logger.info('Liked: {}'.format(total_liked_img))
+        self.logger.info('Already Liked: {}'.format(already_liked))
+        self.logger.info('Commented: {}'.format(commented))
+        self.logger.info('Inappropriate: {}'.format(inap_img))
+        self.logger.info('Not valid users: {}\n'.format(not_valid_users))
+
+        self.liked_img += liked_img
+        self.already_liked += already_liked
+        self.commented += commented
+        self.inap_img += inap_img
+        self.not_valid_users += not_valid_users
+
+        return self
 
 
     def interact_by_users(self,
